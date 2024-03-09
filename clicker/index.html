@@ -1,0 +1,34 @@
+<body>
+
+<canvas id="canvas" style="width:100%;height:100%"></canvas>
+
+<script type="module">
+import { Game } from './clicker_gui.js';
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const g = new Game(canvas);
+
+window.addEventListener("resize", e => {
+    console.log("resize");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    g.resize(window.innerWidth, window.innerHeight);
+});
+
+canvas.addEventListener("click", e => {
+	var x = e.x - canvas.offsetLeft;
+	var y = e.y - canvas.offsetTop;
+	
+    console.log(x, y);
+    g.click(x, y);
+});
+
+g.render();
+
+window.g = g;
+
+</script>
+
+</body>
