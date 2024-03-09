@@ -1,0 +1,110 @@
+<h1>Killer Sudoku Cage Calculator</h1>
+Digits in cage: <input id=totalElement value=5><br/>
+Cage sum: <input id=sumElement value=30><br/>
+
+Without digits: <input id=excludeElement><br/>
+With digits: <input id=includeElement><br/>
+
+<button onclick="update()">Update</button> <button onclick="alll()">All</button>
+
+<pre id="output"></pre>
+
+<script>
+totalElement.addEventListener("change", update);
+sumElement.addEventListener("change", update);
+excludeElement.addEventListener("change", update);
+includeElement.addEventListener("change", update);
+
+function update() {
+    try {
+        const total = parseInt(totalElement.value);        
+        const sum = parseInt(sumElement.value);
+        const exclude = excludeElement.value.split('').map(v => parseInt(v));
+        const include = includeElement.value.split('').map(v => parseInt(v));
+
+        if (isNaN(total)) throw new Error("Missing digits in cage");
+        if (isNaN(sum)) throw new Error("Missing cage sum");
+        exclude.forEach(v => { if (isNaN(v)) throw new Error("Missing exclude digits") } );
+        include.forEach(v => { if (isNaN(v)) throw new Error("Missing include digits") } );
+
+        update_checked(total, sum, exclude, include);
+    } catch (err) {
+        output.innerHTML = "<b style=color:red>" + err.message;
+    }
+}
+
+function update_checked(total, sum, exclude, include) {
+    const result = [];
+    get_combinations(total, sum, [], result);
+    const filtered = result.filter(r => include.length == 0 || contains_any_digit(r, include)).filter(r => exclude.length === 0 || !contains_any_digit(r, exclude));
+    output.innerHTML = filtered.join("<br>");
+    if (filtered.length !== result.length)
+    output.innerHTML += "<br><br>ALL:<br>" + result.join("<br>");
+}
+
+function compare_digits(digits1, digits2) {
+    if (digits1.length !== digits2.length) {
+        return false;
+    }
+
+    for (let i = 0; i < digits1.length; i++) {
+        if (digits1[i] !== digits2[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function get_combinations(total, sum, first_digits, result) {
+    
+    let try_sum = first_digits.reduce((a, b) => a + b, 0);
+    if (try_sum > sum) {
+        return false; // false = dont test any higher digits
+    }
+    
+    if (first_digits.length === total) {
+        if (try_sum === sum) {
+            result.push(first_digits);
+            return false; // false = dont test any higher digits
+        }
+
+        return true; // true = test more/higher digits
+    }
+
+    let i = first_digits.length > 0 ? first_digits[first_digits.length - 1] + 1 : 1;
+    for (; i <= 9; i++) {
+        if (!get_combinations(total, sum, [ ... first_digits, i ], result)) {
+            break;
+        }    
+    }
+    
+    return true;
+}
+
+function contains_any_digit(result, digits) {
+    for (let digit of digits) {
+        if (result.includes(digit)) return true;
+    }
+    
+    return false;
+}
+
+function alll() {
+    output.innerHTML = "";
+    for (let total = 2; total <= 9; total++) {
+        output.innerHTML += total + " cell cage<br/>";
+
+        for (let sum = 3; sum <= 45; sum++) {
+            const combinations = [];
+            get_combinations(total, sum, [], combinations);
+            if (combinations.length > 0) {
+                output.innerHTML += sum + " " + combinations.map(c => c.join("")).join(" ") + "<br>";
+            }
+        }
+        
+        output.innerHTML += "<br>";
+    }
+}
+
+</script>
