@@ -1,0 +1,1765 @@
+<!DOCTYPE html>
+<html>
+<style>
+html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    display: flex;
+    background-color: black;
+}
+canvas { display: block; margin: auto } 
+</style>
+<!-- meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" / -->
+<body>
+<canvas id="c"></canvas>
+<!-- button onclick=next()>next</button -->
+</body>
+<script src="engine.js"></script>
+<script src="menu.js"></script>
+<script>
+
+/*
+game loop
+
+    N spins per turn, SPIN = ACTION
+    pr spin, select 0 or more actions
+    
+    etter battle, upgrade, remove
+
+enemy intent
+    - attack
+    - defense
+    - charge
+    - no-op
+
+xp  - level up - choose reward    
+    
+victory
+    - choose reward
+
+*/
+
+
+// #1 bakgrunn, meny oppå
+// #2 bakgrunn, gameloop oppå
+function intersectRect(r1, r2) {
+  // https://stackoverflow.com/a/2752387/8728340
+  return !(r2.left > r1.right ||
+    r2.right < r1.left ||
+    r2.top > r1.bottom ||
+    r2.bottom < r1.top);
+}
+
+function generateXpLevels() {
+    const levels = [];
+
+    let costTotalXp = 0;
+
+    // exponential gets too hard -- unless, very slow, but also grow xp gain via symbols
+    for (let i = 0; i < 100; i++) {
+
+        const costLevelXp = Math.round(5 * Math.pow(1.05, i + 1) - 1);
+        costTotalXp += costLevelXp;
+        
+        console.log("lv " + (i + 1), costLevelXp, costTotalXp);
+        levels.push({
+            cost: costLevelXp,
+            totalCost: costTotalXp,
+        });
+        
+    }
+    
+    return levels;
+}
+
+function getSymbolStrings(symbol) {
+    let modifiers = [];
+    let up = 0;
+    if (symbol.hasOwnProperty("up")) {
+        up = symbol.up;
+    }
+    
+    if (symbol.hasOwnProperty("attack")) {
+        modifiers.push("Attack " + symbol.attack + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("block")) {
+        modifiers.push("Block " + symbol.block + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("maxHealth")) {
+        modifiers.push("Max health " + symbol.maxHealth + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("heal")) {
+        modifiers.push("Heal " + symbol.heal + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("adjacentUp")) {
+        modifiers.push("Adjacent items +" + symbol.adjacentUp + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("xp")) {
+        modifiers.push("XP +" + symbol.xp + "+" + up);
+    }
+
+    if (symbol.hasOwnProperty("action")) {
+        modifiers.push("AP " + -symbol.action);
+    }
+
+    if (symbol.hasOwnProperty("exhaust")) {
+        modifiers.push("Exhaust " + symbol.exhaust);
+    }
+    
+    if (symbol.hasOwnProperty("rarity")) {
+        modifiers.push("Rarity " + symbol.rarity);
+    }
+
+    if (symbol.hasOwnProperty("up")) {
+        modifiers.push("Up " + symbol.up);
+    }
+    return modifiers;
+}
+
+class InfoBox extends RenderObject {
+
+    // instead of card; title, image, lines
+
+    constructor(screen, gl, title, textureImage, lines) {
+        super(screen, gl);
+
+        // const symbol = card.symbol;
+        // this.card = card;
+        // this.symbol = card.symbol;
+        this.texture = new TexNode(screen, gl, 300, 400);
+
+        this.texture.context.font = '32px monospace';
+        this.texture.context.fillStyle = "#FFF";
+        this.texture.context.fillRect(0, 0, this.texture.canvas.width, this.texture.canvas.height);
+
+        this.texture.context.fillStyle = "#000";
+        this.texture.context.fillText(title, 10, 64);
+        
+        this.texture.context.drawImage(textureImage, 30, 80, 150, 150);
+        // this.texture.context.drawImage(symbol.node.image, 30, 80, 150, 150);
+
+        for (let i = 0; i < lines.length; i++) {
+            this.texture.context.fillText(lines[i], 10, 254 + i * 32);
+        }
+
+        this.texture.updateTexture();
+        this.offsetX = 0;
+        this.offsetY = 0;
+    }
+    
+    draw() {
+        this.texture.offsetX = this.offsetX;
+        this.texture.offsetY = this.offsetY;
+        this.texture.scale = 1;
+        this.texture.draw();
+    }
+    
+    mouseDown(x, y) {
+        if (x >= this.offsetX && x < this.offsetX + this.texture.visibleWidth &&
+            y >= this.offsetY && y < this.offsetY + this.texture.visibleHeight) {
+            this.dispatchEvent(new CustomEvent("click", { detail: this }));
+        }
+    }
+}
+
+// https://fjolt.com/article/html-canvas-how-to-wrap-text
+const wrapText = function(ctx, text, x, y, maxWidth, lineHeight) {
+    let words = text.split(' ');
+    let line = '';
+    let testLine = '';
+    let lineArray = [];
+
+    for(var n = 0; n < words.length; n++) {
+        testLine += `${words[n]} `;
+        let metrics = ctx.measureText(testLine);
+        let testWidth = metrics.width;
+
+        if (testWidth > maxWidth && n > 0) {
+            lineArray.push([line, x, y]);
+            y += lineHeight;
+            line = `${words[n]} `;
+            testLine = `${words[n]} `;
+        }
+        else {
+            line += `${words[n]} `;
+        }
+
+        if(n === words.length - 1) {
+            lineArray.push([line, x, y]);
+        }
+    }
+    // Return the line array
+    return lineArray;
+}
+
+function getIntentStrings(intent, charge) {
+    const parts = [];
+    if (intent.attack) {
+       parts.push("Attack " + (intent.attack + charge));
+    }
+
+    if (intent.heal) {
+       parts.push("Heal " + intent.heal);
+    }
+
+    if (intent.block) {
+       parts.push("Block " + (intent.block + charge));
+    }
+    
+    if (intent.charge) {
+       parts.push("Charge " + intent.charge);
+    }
+    
+    return parts;
+}
+
+class ProgressBar extends RenderObject {
+    constructor(screen, gl, initialValue) {
+        super(screen, gl);
+        this.value = initialValue;
+        this.texture = new Texture(gl);
+        this.texture.initEmpty(256, 64);
+        this.node = new TexturedQuadNode(screen, gl, this.texture);
+        this.appendChild(this.node);
+    }
+    
+    redraw() {
+        this.texture.context.fillStyle = "#8F8";
+        this.texture.context.fillRect(0, 0, this.texture.width, this.texture.height);
+
+        this.texture.context.fillStyle = "#000";
+        this.texture.context.fillRect(10, 10, this.texture.width - 20, this.texture.height - 20);
+
+        this.texture.context.fillStyle = "#8F8";
+        const maxWidth = this.texture.width - 40;
+        this.texture.context.fillRect(20, 20, this.value * maxWidth, this.texture.height - 60);
+        
+        this.texture.updateTexture();
+    }
+}
+
+class EnemyBox extends RenderObject {
+    constructor(screen, gl, gameBoard) {
+        super(screen, gl);
+
+        this.board = gameBoard;
+        this.enemy = gameBoard.enemy;
+        this.texture = new Texture(gl);
+        this.texture.initEmpty(256, 512);
+        
+        this.node = new TexturedQuadNode(screen, gl, this.texture);
+        this.appendChild(this.node);
+        this.redraw();
+    }
+    
+    redraw() {
+        this.texture.context.fillStyle = "#222";
+        this.texture.context.fillRect(0, 0, this.texture.canvas.width, this.texture.canvas.height);
+
+        this.texture.context.font = '36px monospace';
+        this.texture.context.fillStyle = "#fff";
+        this.texture.context.fillText(this.enemy.name, 10, 64);
+
+        this.texture.context.font = '28px monospace';
+        this.texture.context.fillText("Health: " + this.enemy.health + "/" + this.enemy.maxHealth, 10, 64+32+32);
+        this.texture.context.fillText("Block: " + this.enemy.block, 10, 64+32+32+32);
+
+        const intent = this.enemy.actions[this.board.turn % this.enemy.actions.length];
+        const intentLines = getIntentStrings(intent, this.enemy.charge);
+
+        this.texture.context.font = '36px monospace';
+        this.texture.context.fillText("Intent", 10, 64+32+32+32 + 32+32);
+
+        this.texture.context.font = '28px monospace';
+        let lineIndex = 0;
+        for (let line of intentLines) {
+
+            this.texture.context.fillText(line, 10, 64+32+32+32 + 32+32+32+32 + lineIndex * 32);
+        
+        }
+        
+        // health bar, intent, mana?
+        this.texture.updateTexture();
+    }
+    
+    update(t) {
+        this.node.offsetX = this.offsetX;
+        this.node.offsetY = this.offsetY;
+    }
+
+    /*
+    draw() {
+        this.texture.offsetX = this.offsetX;
+        this.texture.offsetY = this.offsetY;
+        this.texture.scale = 1;
+        this.texture.draw();
+    }*/
+}
+
+
+class HeroBox extends RenderObject {
+    constructor(screen, gl, gameBoard) {
+        super(screen, gl);
+
+        this.board = gameBoard;
+        this.hero = gameBoard.hero;
+
+        this.texture = new Texture(gl);
+        this.texture.initEmpty(256, 512);
+        
+        this.node = new TexturedQuadNode(screen, gl, this.texture);
+        this.appendChild(this.node);
+
+        this.redraw();
+    }
+    
+    redraw() {
+        this.texture.context.fillStyle = "#222";
+        this.texture.context.fillRect(0, 0, this.texture.canvas.width, this.texture.canvas.height);
+
+        this.texture.context.font = '36px monospace';
+        this.texture.context.fillStyle = "#fff";
+        this.texture.context.fillText("Hero", 10, 64);
+
+        const level = this.board.levels[this.board.level];
+        this.texture.context.font = '28px monospace';
+        this.texture.context.fillText("HP: " + this.hero.health + " / " + this.hero.maxHealth, 10, 64+32+32);
+        this.texture.context.fillText("BP: " + this.hero.block, 10, 64+32+32+32);
+        this.texture.context.fillText("XP: " + this.board.xp + " / " + level.totalCost, 10, 64+32+32+32+32);
+        this.texture.context.fillText("Lv: " + (this.board.level + 1), 10, 64+32+32+32+32+32);
+        this.texture.context.fillText("AP: " + this.board.actions, 10, 64+32+32+32+32+32+32);
+
+        // this.texture.context.font = '36px monospace';
+        // this.texture.context.fillText("Intent", 10, 64+32+32+32 + 32+32);
+        
+        // health bar, intent, mana?
+        this.texture.updateTexture();
+    }
+    
+    update(t) {
+        this.node.offsetX = this.offsetX;
+        this.node.offsetY = this.offsetY;
+    }
+    
+    /*draw() {
+        this.texture.scale = 1;
+        this.texture.draw();
+    }*/
+}
+
+class SymTexNode extends TexNode {
+    constructor(screen, gl, size, symChar) {
+        super(screen, gl, size, size);
+        
+        this.symChar = symChar;
+
+        this.context.font = (size / 2) + 'px arial';
+        this.context.fillStyle = "#FFF";
+        this.context.fillText(symChar, 0, size / 2);
+        this.update();
+    }
+    
+}
+
+class Wheel extends RenderObject {
+    constructor(screen, gl, board, slotsImg) {
+        super(screen, gl);
+     
+        this.board = board;
+        this.offsetX = 0;
+        this.offsetY = 270;
+        this.slotsNode = new Tex2Node(screen, gl, slotsImg);
+        this.appendChild(this.slotsNode);
+
+        this.items = [];
+        this.hoverSlot = null;
+        
+        this.emptyTexture = new Texture(gl);
+        
+        for (let i = 0; i < 3; i++) {
+        
+            for (let j = 0; j < 3; j++) {
+
+                const node = new TexturedQuadNode(screen, gl, this.emptyTexture);
+                node.scale = 0.4;
+
+                const item = {
+                    indexX: j,
+                    indexY: i,
+                    node: node,
+                    symbol: null, // its not the underlying symbol, but the card in the deck
+                    card: null,
+                };
+
+                this.items[j + i * 3] = item;
+
+                this.appendChild(node);
+                
+            }
+        }
+    }
+    
+    /*async load() {
+        await this.slotsNode.load();
+    }*/
+    
+    setItems(cards) {
+        // items is an array of length 9, with up-to-9 random items from board.deck (or null in the slots if decklen<9)
+        // we are going to set the node texture
+        for (let i = 0; i < 3; i++) {
+        
+            for (let j = 0; j < 3; j++) {
+                const item = this.items[j + i * 3];
+                const card = cards[j + i * 3];
+
+                if (card) {
+                    // embellish with exhaust, ups, 
+                    item.card = card;
+                    item.symbol = card.symbol;
+                    item.node.texture = card.symbol.texture;
+                } else {
+                    item.card = null;
+                    item.symbol = null;
+                    item.node.texture = this.emptyTexture;
+                }
+            }
+        }
+    }
+    
+    update(t) {
+        for (let item of this.items) {
+            if (!item) {
+                continue;
+            }
+            
+            item.offsetX = 60 + this.offsetX + item.indexX * 225;
+            item.offsetY = 50 + this.offsetY + item.indexY * 120;
+            
+            item.node.offsetX = item.offsetX;
+            item.node.offsetY = item.offsetY;
+
+        }
+        
+        this.slotsNode.offsetX = this.offsetX;
+        this.slotsNode.offsetY = this.offsetY;
+
+    }
+
+    mouseMove(x, y) {
+        // if hovering an item, show info about it with the InfoBox
+        // we dont have pre-made rects since the nodes are drawn dynamically
+        // let prevHoverNode = null;
+        // let nextHoverNode = null;
+
+        let hovered = false;
+        
+        for (let slotState of this.items) {
+            if (!slotState) {
+                continue;
+            }
+
+            if (x >= slotState.offsetX && x < slotState.offsetX + 100 && y >= slotState.offsetY && y < slotState.offsetY + 100) {
+
+                hovered = true;
+                if (this.hoverSlot !== slotState) {
+                    if (this.hoverSlot) {
+                        this.dispatchEvent(new CustomEvent("slotout", { detail: this.hoverSlot }));
+                    }
+
+                    this.dispatchEvent(new CustomEvent("slotover", { detail: slotState }));
+                    this.hoverSlot = slotState;
+                    break;
+                }
+            }
+        }
+        
+        if (!hovered && this.hoverSlot) {
+            this.dispatchEvent(new CustomEvent("slotout", { detail: this.hoverSlot }));
+            this.hoverSlot = null;
+        }
+    }
+    
+    mouseDown(x, y) {
+        for (let slotState of this.items) {
+            if (!slotState) {
+                continue;
+            }
+
+            if (x >= slotState.offsetX && x < slotState.offsetX + 100 && y >= slotState.offsetY && y < slotState.offsetY + 100) {
+                this.dispatchEvent(new CustomEvent("slotdown", { detail: slotState }));
+                break;
+            }
+        }
+    }
+    
+    mouseUp(x, y) {}
+}
+
+function randomizeRange(maxItems, rangeMax) {
+    // let maxItems = Math.min(9, this.deck.length);
+    if (maxItems > rangeMax) {
+        throw new Error("Cannot select number of items outside range");
+    }
+    
+    let hand = [];
+    for (let i = 0; i < maxItems; i++) {
+        
+        let s0;
+        do {
+            s0 = Math.floor(Math.random() * rangeMax);
+            
+        } while (hand.includes(s0));
+
+        hand.push(s0);
+    }
+    
+    return hand;
+}
+
+/*
+class LevelUpMenu extends RenderObject {
+    // choose out of N symbols
+    constructor(screen, gl, items) {
+        super(screen, gl);
+        this.items = items; // InfoBox, with extra menubutton to select
+        
+        this.itemBoxes = [];
+        let index = 0;
+        for (let item of this.items) {
+            const itemBox = new InfoBox(screen, gl, item);
+            itemBox.offsetX = 70 + index * 400;
+            itemBox.offsetY = 130;
+            this.itemBoxes.push(itemBox);
+            index++;
+        }
+
+        this.bgNode = new TexNode(screen, gl, screen.width - 100, screen.height - 100);
+        this.bgNode.context.fillStyle = "#000C";
+        this.bgNode.context.fillRect(0, 0, this.bgNode.visibleWidth, this.bgNode.visibleHeight);
+        
+        // filltext "Choose One Symbol"
+        this.bgNode.context.font = '40px monospace';
+        this.bgNode.context.fillStyle = "#FFF";
+        this.bgNode.context.fillText("Level Up - Choose One Reward", 284, 40);
+        
+        this.bgNode.updateTexture()
+        console.log(this.bgNode);
+    }
+    
+    draw() {
+        console.log("draw lev");
+        this.bgNode.offsetX = 50;
+        this.bgNode.offsetY = 50;
+        this.bgNode.draw();
+
+        for (let itemBox of this.itemBoxes) {
+            itemBox.draw();
+        }
+    }
+    
+    mouseMove(x, y) {
+        for (let itemBox of this.itemBoxes) {
+            
+            if (x >= itemBox.offsetX && x < itemBox.offsetX + 300 && y >= itemBox.offsetY && y < itemBox.offsetY + 400) {
+                console.log("MOVED ITEM");
+            }
+        }
+    }
+
+    mouseDown(x, y) {
+
+        let index = 0;
+        for (let itemBox of this.itemBoxes) {
+            
+            if (x >= itemBox.offsetX && x < itemBox.offsetX + 300 && y >= itemBox.offsetY && y < itemBox.offsetY + 400) {
+                console.log("SELECTED ITEM");
+                this.dispatchEvent(new CustomEvent("reward", { detail: this.items[index] }));
+            }
+            
+            index++;
+        }
+    }
+
+    mouseUp(x, y) {
+    }
+}*/
+
+function getCardFromSymbol(symbol) {
+    return {
+        symbol: symbol,
+        ...symbol,
+        up: 0,
+    };
+}
+
+const RARITY_0 = 0.4;
+const RARITY_1 = 0.65;
+const RARITY_2 = 0.85;
+const RARITY_3 = 0.95;
+const RARITY_4 = 1;
+
+const RARITIES = [
+    {
+        name: "Normal",
+        from: 0,
+        to: RARITY_0,
+    }, 
+    {
+        name: "Special",
+        from: RARITY_0,
+        to: RARITY_1,
+    },
+    {
+        name: "Rare",
+        from: RARITY_1,
+        to: RARITY_2,
+    },
+    {
+        name: "Super Rare",
+        from: RARITY_3,
+        to: RARITY_4,
+    },
+    {
+        name: "Legend",
+        from: RARITY_4,
+        to: 1,
+    },
+];
+
+class GameBoard {
+    constructor() {
+        this.turn = 0;
+        this.actions = 2;
+        this.xp = 0;
+        this.level = 0;
+        this.block = 0;
+        this.wheelDeck = [];
+
+        this.symbols = [
+            {
+                name: "Valnir Sword",
+                // node: new ImageTextureNode(screen, gl, "sym_sword1.png"),
+                textureName: "sym_sword1.png",
+                attack: 1,
+                rarity: 0,
+            },
+            {
+                name: "Rolnir Sword",
+                // node: new ImageTextureNode(screen, gl, "sym_sword2.png"),
+                textureName: "sym_sword2.png",
+                attack: 2,
+                rarity: 1,
+            },
+            {
+                name: "Vilnir Sword",
+                // node: new ImageTextureNode(screen, gl, "sym_sword3.png"),
+                textureName: "sym_sword3.png",
+                attack: 3,
+                rarity: 2,
+            },
+
+            {
+                name: "Dagnur Shield",
+                // node: new ImageTextureNode(screen, gl, "sym_shield1.png"),
+                textureName: "sym_shield1.png",
+                block: 1,
+                rarity: 0,
+            },
+            {
+                name: "Ravn Shield",
+                // node: new ImageTextureNode(screen, gl, "sym_shield2.png"),
+                textureName: "sym_shield2.png",
+                block: 2,
+                rarity: 1,
+            },
+            {
+                name: "Therik Shield",
+                // node: new ImageTextureNode(screen, gl, "sym_shield3.png"),
+                textureName: "sym_shield3.png",
+                block: 3,
+                rarity: 2,
+            },
+
+            {
+                name: "Gem 1",
+                // node: new ImageTextureNode(screen, gl, "sym_gem1.png"),
+                textureName: "sym_gem1.png",
+                action: -1,
+                rarity: 2,
+            },
+            {
+                name: "Gem 2",
+                // node: new ImageTextureNode(screen, gl, "sym_gem2.png"),
+                textureName: "sym_gem2.png",
+                action: -2,
+                rarity: 4,
+            },
+            {
+                name: "Gem X",
+                // node: new ImageTextureNode(screen, gl, "sym_gem3.png"),
+                textureName: "sym_gem3.png",
+                rarity: 0,
+                exhaust: 1,
+                adjacentUp: 1,
+                action: 0,
+            },
+
+            {
+                name: "Max Health",
+                exhaust: 1,
+                // node: new ImageTextureNode(screen, gl, "sym_heart.png"),
+                textureName: "sym_heart.png",
+                maxHealth: 2,
+                rarity: 1,
+            },
+
+            {
+                name: "Red Bottle",
+                exhaust: 2,
+                // node: new ImageTextureNode(screen, gl, "sym_redbottle.png"),
+                textureName: "sym_redbottle.png",
+                heal: 2,
+                rarity: 0,
+            },
+            {
+                name: "Blue Bottle",
+                exhaust: 2,
+                // node: new ImageTextureNode(screen, gl, "sym_bluebottle.png"),
+                textureName: "sym_bluebottle.png",
+                heal: 3,
+                rarity: 1,
+            },
+            {
+                name: "Optimizer Potion",
+                // node: new ImageTextureNode(screen, gl, "sym_bottle1.png"),
+                textureName: "sym_bottle1.png",
+                adjacentUp: 1,
+                exhaust: 1,
+                action: 0,
+                rarity: 2,
+            },
+            {
+                name: "Optimized Potion",
+                // node: new ImageTextureNode(screen, gl, "sym_bottle1.png"),
+                textureName: "sym_bottle1.png",
+                adjacentUp: 2,
+                rarity: 4,
+            },
+            {
+                name: "Fire",
+                // node: new ImageTextureNode(screen, gl, "sym_fire1.png"),
+                textureName: "sym_fire1.png",
+                wildcard: true,
+                rarity: 1,
+            },
+        ];
+
+        this.relics = [
+            {
+                name: "Unlock center row",
+                description: "Everything in the center row up+1",
+            },
+            {
+                name: "Unlock center column",
+                description: "Everything in the center column up+1",
+            },
+            {
+                name: "Diagnonality",
+                description: "Diagonals score like center row",
+            },
+            {
+                name: "Immortal",
+                description: "Scoring symbols are replaced with symbols from the deck",
+            },
+            {
+                name: "Experiencer",
+                description: "Gain double XP",
+            },
+            {
+                name: "Pixelator",
+                description: "Retain block at end of turn",
+            },
+        ];
+        
+        // Sawthem The Slayer
+        this.enemies = [
+            {
+                name: "Canthearu",
+                textureName: "enemy.png",
+                maxHealth: 8,
+                health: 8,
+                block: 0,
+                charge: 0,
+                actions: [
+                    {
+                        attack: 1,
+                    },
+                    {
+                        block: 2,
+                    },
+                    {
+                        charge: 2,
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                        heal: 2,
+                    },
+                    {
+                    },
+                ],
+            },
+            {
+                name: "Sawthem",
+                textureName: "enemy2.png",
+                maxHealth: 12,
+                health: 12,
+                block: 0,
+                charge: 0,
+                actions: [
+                    {
+                        block: 2,
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                    },
+                    {
+                        block: 2,
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                    },
+                    {
+                        heal: 2,
+                    },
+                    {
+                        charge: 1,
+                    },
+                ],
+            },
+            {
+                name: "Krieger",
+                textureName: "enemy3.png",
+                maxHealth: 16,
+                health: 16,
+                block: 0,
+                charge: 0,
+                actions: [
+                    {
+                        block: 2,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                    },
+                    {
+                        block: 2,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                        heal: 2,
+                    },
+                    {
+                        charge: 2,
+                    },
+                ],
+            },
+            {
+                name: "Rabbel",
+                textureName: "enemy4.png",
+                maxHealth: 24,
+                health: 24,
+                block: 10,
+                charge: 0,
+                elite: true,
+                actions: [
+                    {
+                        attack: 3,
+                    },
+                    {
+                    },
+                    {
+                        attack: 3,
+                    },
+                    {
+                    },
+                    {
+                        attack: 3,
+                    },
+                    {
+                    },
+                    {
+                        attack: 1,
+                    },
+                    {
+                        heal: 3,
+                    },
+                    {
+                        block: 10,
+                    },
+                    {
+                        charge: 2,
+                    },
+                ],
+            },
+            {
+                name: "Romulis",
+                textureName: "enemy5.png",
+                maxHealth: 32,
+                health: 32,
+                block: 0,
+                charge: 0,
+                elite: true,
+                actions: [
+                    {
+                        charge: 2,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                    },
+                    {
+                        block: 3,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                    },
+                    {
+                        block: 3,
+                    },
+                    {
+                        attack: 2,
+                    },
+                    {
+                    },
+                    {
+                        heal: 3,
+                    },
+                ],
+            },
+        ];
+        
+        this.paths = [
+            {
+                name: "Enemy",
+                type: "enemy",
+                textureName: "sym_head1.png",
+            },
+            {
+                name: "Elite",
+                type: "elite",
+                textureName: "sym_headhorn.png",
+            },
+            {
+                name: "Event",
+                type: "event",
+                textureName: "sym_fire2.png",
+            },
+        ];
+        
+        this.events = [
+            {
+                name: "You meet a shaman who offers you a trip to knowledge. Eat it?",
+                xp: 20,
+            },
+            {
+                name: "As you dig the grave to bury your enemy, you find a chest in the ground. Open it?",
+                block: 20,
+            },
+            {
+                name: "A well-meaning old lady offers you a well-spiked drink. Drink it?",
+                maxHealth: 5,
+            },
+            {
+                name: "The baker offers you a cookie. Eat it?",
+                heal: 5,
+            },
+            /*{
+                name: "A person approaches and offers to take a burden off your chest.",
+                removeCard: true,
+            },*/
+        ];
+        // event = always yes, no =>
+        
+        // const enemy = this.enemies[Math.floor(Math.random() * this.enemies.length)];
+        this.enemy = null;
+        // this.setEnemy(enemy);
+
+        this.hero = null; /*{
+            name: "Hero",
+            maxHealth: 8,
+            health: 8,
+            block: 1,
+            // actions: 3,
+        };*/
+        this.deck = [];
+        
+        this.levels = generateXpLevels();
+    }
+    
+    setRandomEnemy(elite) {
+        const enemies = this.enemies.filter(e => (elite && e.elite) || (!elite && !e.elite) );
+        const enemy = enemies[Math.floor(Math.random() * enemies.length)];
+        console.log(this.enemies, enemy);
+        this.setEnemy(enemy);
+    }
+
+    setEnemy(enemy) {
+        this.enemy = {
+            ...enemy,
+        }
+    }
+
+    nextTurn(resolve) {
+
+        // DO ENEMY INTENT
+        const intent = this.enemy.actions[this.turn % this.enemy.actions.length];
+        console.log("DO INTENT", intent);
+
+        if (intent.attack) {
+            let attack = intent.attack + this.enemy.charge;
+            let blockDown = Math.min(this.hero.block, attack);
+            attack -= blockDown;
+
+            let healthDown = Math.min(this.hero.health, attack);
+            
+            this.hero.block -= blockDown;
+            this.hero.health -= healthDown;
+        }
+        
+        if (intent.block) {
+            this.enemy.block += intent.block + this.enemy.charge;
+        }
+
+        if (intent.heal) {
+            this.enemy.health += intent.heal;
+        }
+        
+        if (intent.charge) {
+            // this.enemy.charge += intent.charge;
+            // alle intents block/attack += charge
+            this.enemy.charge += intent.charge;
+            /*for (let action of this.enemy.actions) {
+                if (action.attack) {
+                    action.attack += intent.charge;
+                }
+
+                if (action.block) {
+                    action.block += intent.charge;
+                }
+            }*/
+        }
+
+        // IT MAY BE GAME OVER HERE
+        if (this.hero.health <= 0) {
+            resolve("gameover");
+            return;
+        }
+        
+        this.actions = 2;
+        this.turn++;
+        // this.endTurnBtn.visible = false;
+        // this.spinBtn.visible = true;
+        
+        this.spin();
+    }
+    
+    isVictory() {
+        return this.enemy.health === 0;
+    }
+
+    isDefeat() {
+        return this.hero.health === 0;
+    }
+    
+    isLevelUp() {
+        return (this.xp >= this.levels[this.level].totalCost);
+    }
+    
+    doAction(item) {
+    
+        // TODO "effective" values based not only on base-symbol, but deck-specific, game-specific and turn-specific modifiers
+    
+        // const symbol = item.symbol;
+        const card = item.card;
+        // clicked item on board
+        console.log(item);
+
+        let symbolActions = 1;
+        if (card.hasOwnProperty("action")) {
+            // because it can be 0 for free
+            symbolActions = card.action;
+        }
+
+        if (this.actions < symbolActions) {
+            console.log("Not enough AP");
+            return;
+        }
+
+        if (card.attack) {
+            let attack = card.attack + card.up;
+            let blockDown = Math.min(this.enemy.block, attack);
+            attack -= blockDown;
+
+            let healthDown = Math.min(this.enemy.health, attack);
+            
+            this.enemy.block -= blockDown;
+            this.enemy.health -= healthDown;
+        }
+        
+        if (card.block) {
+            this.hero.block += card.block + card.up;
+        }
+
+        if (card.maxHealth) {
+            this.hero.maxHealth += card.maxHealth + card.up;
+        }
+
+        if (card.heal) {
+            this.hero.health = Math.min(this.hero.health + card.heal + card.up, this.hero.maxHealth);
+        }
+
+        if (card.adjacentUp) {
+            // this.hero.maxHealth += symbol.maxHealth;
+            // animate number moving to adjacents; 
+            const cardIndex = this.wheelDeck.indexOf(card);
+            const row = Math.floor(cardIndex / 3);
+            const col = cardIndex % 3;
+            
+            if (col > 0) { // left
+                const c = this.wheelDeck[(col - 1) + row * 3];
+                if (c) c.up += (card.adjacentUp + card.up);
+            }
+
+            if (row > 0) { // top
+                const c = this.wheelDeck[col + (row - 1) * 3];
+                if (c) c.up += (card.adjacentUp + card.up);
+            }
+
+            if (col < 3) { // right
+                const c = this.wheelDeck[(col + 1) + row * 3];
+                if (c) c.up += (card.adjacentUp + card.up);
+            }
+
+            if (row < 3) { // bottom
+                const c = this.wheelDeck[col + (row + 1) * 3];
+                if (c) c.up += (card.adjacentUp + card.up);
+            }
+        }
+
+        // remove from wheel too - ALL symbols remove
+        console.log("remove - should by card", card);
+        const itemIndex = this.wheelDeck.indexOf(card);
+        // this.wheelDeck.splice(itemIndex, 1);
+        this.wheelDeck[itemIndex] = null;
+        
+        if (card.exhaust > 0) {
+            card.exhaust --; // TODO changes globally! is deck-specific; or clone symbol at some point
+            if (card.exhaust <= 0) {
+                // TODO; ok for now, removes first of type, modified cards not supported
+                const deckIndex = this.deck.indexOf(card);
+                this.deck.splice(deckIndex, 1);
+            }
+        }
+        
+        this.endAction(symbolActions);
+
+        this.xp ++;
+
+        console.log("xp/next", this.xp, this.levels[this.level]);
+
+        // this.heroBox.redraw();
+        // this.enemyBox.redraw();
+    }
+    
+    getLevelUpItems() {
+        // determine 3 rarities; choose symbols from rarity; duplicate allowed
+        // how to increase rarity
+        const items = [];
+        const rarityLevel = Math.min((this.level - 1) / 50, 1);
+        
+        const maxRarity = 0.5 + rarityLevel;
+        const maxRarityInfo = RARITIES.find(r => maxRarity >= r.from && maxRarity < r.to);
+        console.log("Get level up items, max rarity = ", RARITIES, maxRarity, maxRarityInfo);
+        
+        for (let i = 0; i < 3; i++) {
+            // level = rarity ? unlock max level at level 25, but keep getting likelier
+            const rarity = Math.random() * 0.5 + rarityLevel;
+            const rarityInfo = RARITIES.find(r => rarity >= r.from && rarity < r.to);
+            const rarityInfoIndex = RARITIES.indexOf(rarityInfo);
+            const raritySymbols = this.symbols.filter(s => s.rarity === rarityInfoIndex);
+            
+            /*let raritySymbols;
+            if (rarity < 0.4) {
+                // rarity 0
+                raritySymbols = this.symbols.filter(s => s.rarity === 0);
+            } else if (rarity < 0.65) {
+                // rarity 1
+                raritySymbols = this.symbols.filter(s => s.rarity === 1);
+            } else if (rarity < 0.85) {
+                // rarity 2
+                raritySymbols = this.symbols.filter(s => s.rarity === 2);
+            } else if (rarity < 0.95) {
+                // rarity 3
+                raritySymbols = this.symbols.filter(s => s.rarity === 3);
+            } else {
+                // rarity 4
+                raritySymbols = this.symbols.filter(s => s.rarity === 4);
+            }*/
+            
+            const rarityIndex = Math.floor(Math.random() * raritySymbols.length);
+            items.push(getCardFromSymbol(raritySymbols[rarityIndex]));
+        }
+
+        return items;
+    }
+    
+    getPathCards() {
+        const cards = [];
+
+        for (let i = 0; i < 3; i++) {
+            const prob = Math.floor(Math.random() * this.paths.length);
+            cards.push(this.paths[prob]);
+        };
+
+        return cards;
+    }
+
+    endAction(symbolActions) {
+
+        console.log(this.actions, symbolActions);
+        
+        const maxActions = Math.min(this.actions, symbolActions);
+        this.actions -= maxActions;
+
+        if (this.actions == 0) {
+            // show next turn button
+            // this.endTurnBtn.visible = true;
+            // this.spinBtn.visible = false;
+            // this.spinBtn
+        }
+    }
+
+    spin() {
+        console.log("SPIN WITH ", this.deck);
+        // select up to 9 symbols from deck into hand
+        let maxItems = Math.min(9, this.deck.length);        
+        let hand = randomizeRange(maxItems, this.deck.length); // N random indexes into deck
+        let slots = randomizeRange(9, 9); // 0..8 randomized order
+        
+        console.log("SPIN RESULT", hand, slots);
+        
+        // hand[0] -> slot[0] etc
+        // before spin, clear all ups
+        /*for (let card of this.deck) {
+            card.up = 0;
+        }*/
+        
+        let result = [];
+        for (let i = 0; i < 9; i++) {
+            let slotIndex = slots.indexOf(i);
+            let handIndex = hand[slotIndex];
+            let handItem = this.deck[handIndex];
+            if (!handItem) {
+                result.push(null);
+                continue;
+            }
+            
+            result.push(handItem);
+        }
+        
+        /*
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                const card = result[j + i * 3];
+                if (card && card.hasOwnProperty("adjacentUp")) 
+                {
+                    if (j > 0) { // left
+                        const c = result[(j - 1) + i * 3];
+                        if (c) c.up += (card.adjacentUp + card.up);
+                    }
+
+                    if (i > 0) { // top
+                        const c = result[j + (i - 1) * 3];
+                        if (c) c.up += (card.adjacentUp + card.up);
+                    }
+
+                    if (j < 3) { // right
+                        const c = result[(j + 1) + i * 3];
+                        if (c) c.up += (card.adjacentUp + card.up);
+                    }
+
+                    if (i < 3) { // bottom
+                        const c = result[j + (i + 1) * 3];
+                        if (c) c.up += (card.adjacentUp + card.up);
+                    }
+                }
+            }
+        }
+        */
+        
+        this.wheelDeck = result;
+        // return result;
+    }
+}
+
+class ShadedBackground extends TexturedQuadNode {
+    constructor(screen, gl) {
+        super(screen, gl);
+        
+        this.texture.initEmpty(screen.width - 100, screen.height - 100);
+        this.texture.context.fillStyle = "#000C";
+        this.texture.context.fillRect(0, 0, this.texture.width, this.texture.height);
+    
+        this.texture.updateTexture();
+    }
+}
+
+async function showLevelUpMenu(parent, board, cards, title) {
+    const gl = parent.gl;
+    const screen = parent.screen;
+
+    const bg = new ShadedBackground(screen, gl);
+    bg.offsetX = 50;
+    bg.offsetY = 50;
+    // filltext "Choose One Symbol"
+    bg.texture.context.font = '40px monospace';
+    bg.texture.context.fillStyle = "#FFF";
+    bg.texture.context.fillText(title, 284, 40);
+    bg.texture.updateTexture();
+
+    parent.appendChild(bg);
+
+    const itemBoxes = [];
+    
+    const result = await new Promise((resolve, reject) => {
+
+        let index = 0;
+        for (let card of cards) {
+
+            const lines = getSymbolStrings(card);
+            const itemBox = new InfoBox(screen, gl, card.name, card.textureImage, lines);
+            itemBox.offsetX = 70 + index * 400;
+            itemBox.offsetY = 130;
+            itemBoxes.push(itemBox);
+            parent.appendChild(itemBox);
+            
+            itemBox.addEventListener("click", e => {
+                // we should be getting a card, 
+                console.log("REWARD - THESE SHOULD BE SAME", e.detail, card);
+                // board.deck.push(card);
+                resolve(card);
+            });
+            
+            index++;
+        }
+    });
+
+    parent.removeChild(bg);
+    for (let itemBox of itemBoxes) {
+        parent.removeChild(itemBox);
+    }
+
+    console.log("LEVELED UP DONE!");
+    return result;
+}
+
+async function showVictoryMenu(parent, board) {
+    // victory logo, continue button
+    const buttonImg = await createImage("buttong.png");
+    const victoryImg = await createImage("victory.png");
+    const gl = parent.gl;
+    const screen = parent.screen;
+    const victoryNode = new Tex2Node(screen, gl, victoryImg);
+    const continueButton = new MenuButton(screen, gl, "CONT", 0, buttonImg);
+
+    continueButton.offsetY = 475;
+    continueButton.offsetX = (parent.screen.width / 2) - (buttonImg.width * continueButton.scale) / 2;
+
+    parent.appendChild(victoryNode);
+
+    victoryNode.scale = 0;
+    await parent.animate(0, 1, t => {
+        t = t * t * t;
+        console.log(t);
+        let centerX = screen.width / 2;
+        let centerLeft = victoryImg.width / 2;
+        victoryNode.offsetX = centerX - centerLeft * t;
+        victoryNode.scale = t;
+    });
+
+    parent.appendChild(continueButton);
+
+    await new Promise((resolve, reject) => {
+        continueButton.addEventListener("click", () => {
+            resolve();
+        });
+
+    });
+    
+    parent.removeChild(victoryNode);
+    parent.removeChild(continueButton);
+    
+};
+
+async function runEventMenu(parent, board) {
+    const gl = parent.gl;
+    const screen = parent.screen;
+    
+    const boardEvent = board.events[Math.floor(Math.random() * board.events.length)];
+
+    const buttonImg = await createImage("buttong.png");
+
+    const bg = new ShadedBackground(screen, gl);
+    bg.offsetX = 50;
+    bg.offsetY = 50;
+    // filltext "Choose One Symbol"
+    bg.texture.context.font = '40px monospace';
+    bg.texture.context.fillStyle = "#FFF";
+    bg.texture.context.fillText(boardEvent.name, 284, 40);
+    
+    const lines = getSymbolStrings(boardEvent, 0);
+    for (let i = 0; i < lines.length; i++) {
+        bg.texture.context.fillText(lines[i], 284, 40 + 40 + 40 * i);
+    }
+    
+    bg.texture.updateTexture();
+
+    parent.appendChild(bg);
+
+    const yesBtn = new MenuButton(screen, gl, "YES", 0, buttonImg);
+    yesBtn.offsetX = 0;
+    yesBtn.offsetY = screen.height - 300;
+
+    const noBtn = new MenuButton(screen, gl, "NO", 0, buttonImg);
+    noBtn.offsetX = screen.width - (buttonImg.width * noBtn.scale) - 100;
+    noBtn.offsetY = screen.height - 300;
+
+    parent.appendChild(yesBtn);
+    parent.appendChild(noBtn);
+
+    const z = await new Promise((resolve, reject) => {
+        yesBtn.addEventListener("click", e => {
+            resolve(boardEvent);
+        });
+
+        noBtn.addEventListener("click", e => {
+            resolve(null);
+        });
+    });
+    
+    parent.removeChild(yesBtn);
+    parent.removeChild(noBtn);
+    parent.removeChild(bg);
+
+    return z;
+
+}
+
+async function runBoard(parent, board) {
+    const gl = parent.gl;
+    const screen = parent.screen;
+
+    const buttonImg = await createImage("buttong.png");
+    const heroImg = await createImage("hero.png");
+    const enemyImg = board.enemy.textureImage; // await createImage("enemy.png");
+    const arenaImg = await createImage("arena5.jpg");
+    const victoryImg = await createImage("victory.png");
+    const defeatImg = await createImage("defeat.png");
+    const slotsImg = await createImage("slots2.png");
+    
+    const heroNode = new Tex2Node(screen, gl, heroImg);
+    heroNode.scale = 0.7;
+
+    console.log("ENEMIGE", board.enemy, enemyImg);
+    const enemyNode = new Tex2Node(screen, gl, enemyImg);
+    enemyNode.offsetX = screen.width - enemyImg.width;
+    enemyNode.offsetY = 20;
+    enemyNode.scale = 0.9;
+
+    const arenaNode = new Tex2Node(screen, gl, arenaImg);
+    arenaNode.scale = screen.width / arenaImg.width;
+    
+    const defeatNode = new Tex2Node(screen, gl, defeatImg);
+    
+    const wheel = new Wheel(screen, gl, board, slotsImg);
+    wheel.offsetX = (screen.width / 2) - (slotsImg.width / 2);
+    
+    const endTurnBtn = new MenuButton(screen, gl, "END TURN", 0, buttonImg);
+    endTurnBtn.offsetX = 0;
+    endTurnBtn.offsetY = screen.height - buttonImg.height * endTurnBtn.scale - 5;
+
+    const enemyBox = new EnemyBox(screen, gl, board);
+    enemyBox.offsetX = 990;
+    enemyBox.offsetY = 280;
+
+    const heroBox = new HeroBox(screen, gl, board);
+    heroBox.offsetX = 10;
+    heroBox.offsetY = 280;
+
+    let infoBox = null;
+    // let levelUpMenu = null;
+    
+    parent.appendChild(arenaNode);
+    parent.appendChild(heroNode);
+    parent.appendChild(enemyNode);
+    parent.appendChild(wheel);
+    parent.appendChild(heroBox);
+    parent.appendChild(enemyBox);
+    parent.appendChild(endTurnBtn);
+
+    const promise = new Promise((resolve, reject) => {
+        wheel.addEventListener("slotover", e => {
+            if (!e.detail.symbol) {
+                return;
+            }
+            
+            console.log("info about ", e.detail);
+            const card = e.detail.card;
+            const lines = getSymbolStrings(card);
+            infoBox = new InfoBox(screen, gl, card.name, card.textureImage, lines);
+            // infoBox = new InfoBox(screen, gl, e.detail.card);
+            infoBox.offsetX = e.detail.offsetX + 160; // 950;
+            infoBox.offsetY = 150;
+            parent.appendChild(infoBox);
+        });
+
+        wheel.addEventListener("slotout", e => {
+            console.log("clear about ", e.detail);
+            parent.removeChild(infoBox);
+            infoBox = null;
+        });
+
+        wheel.addEventListener("slotdown", async e => {
+            console.log("clicked ", e.detail);
+            parent.removeChild(infoBox);
+            infoBox = null;
+            board.doAction(e.detail);
+            wheel.setItems(board.wheelDeck);
+            heroBox.redraw();
+            enemyBox.redraw();
+
+            // check for victory/defeat
+            if (board.isVictory()) {
+                await showVictoryMenu(parent, board);
+                resolve();
+                return;
+            }
+            
+            if (board.isDefeat()) {
+                resolve();
+                return;
+            }
+            
+            if (board.isLevelUp()) {
+                // level up
+                console.log("LEVEL UP");
+                board.level ++;
+
+                const cards = board.getLevelUpItems();
+                const card = await showLevelUpMenu(parent, board, cards, "Level Up - Choose One Reward");
+                board.deck.push(card);
+                
+                console.log("Level up done");
+            }
+            
+        });
+
+        endTurnBtn.addEventListener("click", e => {
+            console.log("NEXT TURN!");
+            board.nextTurn(resolve);
+            wheel.setItems(board.wheelDeck);
+            // wheel.setItems(spinDeck);
+        
+            heroBox.redraw();
+            enemyBox.redraw();
+        });
+        
+    });
+    
+    board.spin();
+    wheel.setItems(board.wheelDeck);
+
+    // Wait for promise that resolves on victory, gameover or esc
+    const result = await promise;
+    
+    parent.removeChild(arenaNode);
+    parent.removeChild(heroNode);
+    parent.removeChild(enemyNode);
+    parent.removeChild(wheel);
+    parent.removeChild(heroBox);
+    parent.removeChild(enemyBox);
+    parent.removeChild(endTurnBtn);
+    
+    return result;
+}
+
+function runSelectRelic(parent, board) {
+}
+
+async function runSelectPath(parent, board) {
+    // choose from 3 paths, each with 
+    // 33% enemy, 33% elite, 33% event
+
+    const cards = board.getPathCards();
+    console.log("PATHS", cards);
+    const card = await showLevelUpMenu(parent, board, cards, "Select Path");
+    console.log("SELECTED", card);
+    return card.type;
+}
+
+function runEvent(parent, board) {
+    // something happened, you get a car!
+}
+
+
+async function loadTextures(gm, arr) {
+    for (let symbol of arr) {
+        console.log("TEX2LOAD", symbol.textureName);
+        const image = await createImage(symbol.textureName);
+        const texture = new Texture(gm.gl);
+        texture.initFromImage(image);
+
+        symbol.textureImage = image;
+        symbol.texture = texture;
+    }
+}
+
+
+const gm = GraphManager.attach(c);
+
+async function run() {
+    let board = new GameBoard();
+
+    await loadTextures(gm, board.symbols);
+    await loadTextures(gm, board.enemies);
+    await loadTextures(gm, board.paths);
+
+    // init deck after loading textures
+    board.deck = [
+        getCardFromSymbol(board.symbols[0]),
+        getCardFromSymbol(board.symbols[0]),
+        getCardFromSymbol(board.symbols[3]),
+        getCardFromSymbol(board.symbols[3]),
+        getCardFromSymbol(board.symbols[12]),
+    ];
+    board.xp = 0;
+    board.level = 0;
+    board.block = 0;
+    board.hero = {
+        name: "Hero",
+        maxHealth: 8,
+        health: 8,
+        block: 1,
+    };
+
+    while (1) {
+        const selected = await runMenu(gm);
+        
+        if (selected === "play") {
+            
+            // game loop; 
+            // - select start relic
+            // - repeat;
+            //   - select path 1-2; fight, event
+            //   - fight -> board run
+            //   - event -> xp, max HP, heal, store, upgrade, remove
+            //   - reward -> xp, max HP, heal, store, upgrade, remove
+            let stages = 0;
+            while (stages < 4) {
+                // TODO init board with new enemy
+                const path = await runSelectPath(gm, board);
+                
+                if (path === "elite" || path === "enemy") {
+                    board.turn = 0;
+                    board.actions = 2;
+
+                    board.setRandomEnemy(path === "elite");
+                    await runBoard(gm, board);
+
+                    console.log("END OF BOARD");
+                    stages++;
+
+                } else if (path === "event") {
+                    const ev = await runEventMenu(gm, board);
+                    if (ev) {
+                        if (ev.hasOwnProperty("xp")) {
+                            board.xp += ev.xp;
+                        }
+
+                        if (ev.hasOwnProperty("maxHealth")) {
+                            board.hero.maxHealth += ev.maxHealth;
+                        }
+
+                        if (ev.hasOwnProperty("heal")) {
+                            board.hero.health += ev.heal;
+                        }
+
+                        if (ev.hasOwnProperty("block")) {
+                            board.hero.block += ev.block;
+                        }
+                    }
+
+                } else {
+                    throw new Error("Unhandled path " + path);
+                }                
+            }
+        }
+        
+    }
+}
+
+function redraw(t) {
+    gm.render();
+    requestAnimationFrame(redraw);
+}
+
+redraw(0);
+run();
+
+
+/*
+window.addEventListener("keydown", e => {
+    attack(figure);
+});
+
+
+var cur = 0;
+function next() {
+    cur++;
+    figure.context.reset();
+    figure.context.drawImage(spritesImage, (cur % 10) * 16, Math.floor(cur / 10) * 16, 16, 16, 0, 0, 16, 16);
+    figure.update();
+    console.log(next)
+}*/
+
+</script>
+</html>
